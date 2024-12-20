@@ -77,7 +77,7 @@ def capture_and_identify_faces():
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         # Localiza rostos no frame
-        face_locations = face_recognition.face_locations(rgb_frame, model='cnn')
+        face_locations = face_recognition.face_locations(rgb_frame)
         face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
 
         for face_encoding, face_location in zip(face_encodings, face_locations):
