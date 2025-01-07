@@ -2,6 +2,9 @@ import os
 import cv2
 import face_recognition
 import numpy as np
+import requests
+from io import BytesIO
+from PIL import Image
 
 # Configuração dos diretórios
 KNOWN_FACES_DIR = 'data/known_faces'
@@ -18,25 +21,35 @@ def load_known_faces():
             name = filename.split('_')[0]  # Nome antes do "_X.jpg"
             img_path = os.path.join(KNOWN_FACES_DIR, filename)
             # Carregar imagem e calcular os "encodings"
-            image = face_recognition.load_image_file(img_path)
-            encodings = face_recognition.face_encodings(image)
-            if encodings:  # Verifica se encontrou um rosto
-                known_faces.append(encodings[0])
-                known_names.append(name)
+            try:
+                image = face_recognition.load_image_file(img_path)
+                encodings = face_recognition.face_encodings(image)
+                if encodings:  # Verifica se encontrou um rosto
+                    known_faces.append(encodings[0])
+                    known_names.append(name)
+            except Exception as e:
+                print(f"Erro ao carregar a imagem {filename}: {e}")
     return known_faces, known_names
 
+# Função para obter a lista de imagens e dados falsos da API Flask
+def get_images_from_api():
+    try:
+        response = requests.get('http://127.0.0.1:5000/images/lista')  # Endereço da API
+        if response.status_code == 200:
+            return response.json()['images']
+        else:
+            print(f"Erro ao obter lista de imagens. Status code: {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        print(f"Erro na requisição: {e}")
+    return []
+
 # Função para capturar e identificar rostos
-def compare_image_with_known_faces(image_path):
+def compare_image_with_known_faces(image):
     # Carrega os rostos conhecidos
     known_faces, known_names = load_known_faces()
     if not known_faces:
         return [{"error": "Nenhum rosto conhecido foi carregado."}]  # Retorna lista com um dicionário de erro
 
-    # Carregar imagem de entrada
-    if not os.path.exists(image_path):
-        return [{"error": f"Arquivo não encontrado: {image_path}"}]
-
-    image = face_recognition.load_image_file(image_path)
     rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
     # Localiza rostos no frame
@@ -49,6 +62,9 @@ def compare_image_with_known_faces(image_path):
     # Dicionário de resultados
     results = []
 
+    # Obter a lista de imagens e dados falsos da API
+    images_info = get_images_from_api()
+
     for face_encoding, face_location in zip(face_encodings, face_locations):
         # Comparação com rostos conhecidos
         face_distances = face_recognition.face_distance(known_faces, face_encoding)
@@ -60,10 +76,14 @@ def compare_image_with_known_faces(image_path):
             name = "Desconhecido"
             status = "Desconhecido"
 
+        # Buscar dados falsos da API para a imagem reconhecida
+        image_info = next((item['data'] for item in images_info if item['image'] == f"{name}.jpg"), {})
+
         # Salvar o resultado em um dicionário
         results.append({
             "name": name,
-            "status": status
+            "status": status,
+            "data": image_info  # Adiciona os dados falsos
         })
 
         # Desenhar o nome e o bounding box na imagem
@@ -75,15 +95,37 @@ def compare_image_with_known_faces(image_path):
     # Mostrar ou salvar a imagem resultante
     return results
 
+# Função para carregar a imagem da API
+def get_image_from_api(image_name):
+    try:
+        response = requests.get(f'http://127.0.0.1:5000/images/{image_name}')
+        if response.status_code == 200:
+            image = Image.open(BytesIO(response.content))
+            return np.array(image)
+        else:
+            print(f"Erro ao obter imagem {image_name}. Status code: {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        print(f"Erro na requisição: {e}")
+    return None
+
 # Execução principal
 if __name__ == "__main__":
-    image_path = input("Digite o caminho da imagem para análise: ").strip()
-    result = compare_image_with_known_faces(image_path)
-    
-    if isinstance(result, list) and "error" in result[0]:  # Verifica se há erro nos resultados
-        print(result[0]["error"])
-    else:
-        print("Resultados da análise:")
-        for res in result:
-            print(f"Nome: {res['name']}, Status: {res['status']}")
+    images_info = get_images_from_api()  # Obtém a lista de imagens da API
 
+    if images_info:
+        for image_info in images_info:
+            image_name = image_info['image']
+            image = get_image_from_api(image_name)  # Obtém a imagem da API
+            if image is not None:
+                result = compare_image_with_known_faces(image)
+                
+                if isinstance(result, list) and "error" in result[0]:  # Verifica se há erro nos resultados
+                    print(result[0]["error"])
+                else:
+                    print(f"Resultados da análise para a imagem {image_name}:")
+                    for res in result:
+                        print(f"Nome: {res['name']}, Status: {res['status']}, Dados: {res['data']}")
+            else:
+                print(f"Erro ao obter a imagem {image_name}.")
+    else:
+        print("Erro ao obter a lista de imagens da API.")

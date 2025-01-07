@@ -1,94 +1,78 @@
+from flask import Flask, jsonify, send_from_directory
 import os
-from flask import Flask, request, jsonify
-import cv2
-import face_recognition
-import numpy as np
-from PIL import Image
-from io import BytesIO
+import json
 
-# Configuração dos diretórios
-KNOWN_FACES_DIR = 'data/known_faces'
-
-if not os.path.exists(KNOWN_FACES_DIR):
-    os.makedirs(KNOWN_FACES_DIR)
-
-# Função para carregar rostos conhecidos
-def load_known_faces():
-    known_faces = []
-    known_names = []
-    for filename in os.listdir(KNOWN_FACES_DIR):
-        if filename.endswith(('.jpg', '.png')):  # Suporte a múltiplos formatos
-            name = filename.split('_')[0]  # Nome antes do "_X.jpg"
-            img_path = os.path.join(KNOWN_FACES_DIR, filename)
-            # Carregar imagem e calcular os "encodings"
-            image = face_recognition.load_image_file(img_path)
-            encodings = face_recognition.face_encodings(image)
-            if encodings:  # Verifica se encontrou um rosto
-                known_faces.append(encodings[0])
-                known_names.append(name)
-    return known_faces, known_names
-
-# Função para capturar e identificar rostos
-def compare_image_with_known_faces(file):
-    # Carrega os rostos conhecidos
-    known_faces, known_names = load_known_faces()
-    if not known_faces:
-        return "Nenhum rosto conhecido foi carregado."
-
-    try:
-        # Abrir o arquivo como uma imagem
-        image = Image.open(file)
-        image = np.array(image)  # Converter para array NumPy
-    except Exception as e:
-        return f"Erro ao processar a imagem: {str(e)}"
-
-    # Localiza rostos no frame
-    face_locations = face_recognition.face_locations(image)
-    face_encodings = face_recognition.face_encodings(image, face_locations)
-
-    if not face_encodings:
-        return "Nenhum rosto foi detectado na imagem fornecida."
-
-    # Dicionário de resultados
-    results = []
-
-    for face_encoding, face_location in zip(face_encodings, face_locations):
-        # Comparação com rostos conhecidos
-        face_distances = face_recognition.face_distance(known_faces, face_encoding)
-        best_match_index = np.argmin(face_distances)
-        if face_distances[best_match_index] < 0.5:  # Limite ajustável
-            name = known_names[best_match_index]
-            status = "Conhecido"
-        else:
-            name = "Desconhecido"
-            status = "Desconhecido"
-
-        # Salvar o resultado
-        results.append({
-            "name": name,
-            "status": status,
-            "location": face_location,
-        })
-
-    return results
-
-# Configuração do Flask
 app = Flask(__name__)
 
-@app.route('/analyze', methods=['POST'])
-def analyze_image():
-    if 'file' not in request.files:
-        return jsonify({"error": "Nenhum arquivo foi enviado."}), 400
+# Caminho para o diretório de imagens
+IMAGES_DIR = 'images'
+DATA_FILE = 'image_data.json'  # Arquivo JSON com os dados falsos
 
-    file = request.files['file']  # Obter o arquivo enviado
+# Verifica se o diretório de imagens existe
+if not os.path.exists(IMAGES_DIR):
+    os.makedirs(IMAGES_DIR)
 
-    # Processar a imagem
-    result = compare_image_with_known_faces(file)
-    if isinstance(result, str):  # Caso tenha ocorrido algum erro
-        return jsonify({"error": result}), 400
+# Dados falsos para as imagens
+image_data = {
+    "annanda_5.jpg": {
+        "idade": 25,
+        "profissao": "Engenheiro",
+        "local": "São Paulo",
+        "interesses": ["Tecnologia", "Inovação", "Robótica"]
+    },
+    "joao_3.jpg": {
+        "idade": 30,
+        "profissao": "Médico",
+        "local": "Rio de Janeiro",
+        "interesses": ["Saúde", "Tecnologia", "Correr"]
+    },
+    "ana.jpg": {
+        "idade": 22,
+        "profissao": "Designer",
+        "local": "Belo Horizonte",
+        "interesses": ["Design Gráfico", "Arte", "Fotografia"]
+    }
+}
 
-    return jsonify({"results": result})
+# Função para carregar os dados falsos
+def load_image_data():
+    return image_data
 
-# Execução do servidor Flask
+# Rota para listar todas as imagens e seus dados falsos
+@app.route('/images/lista', methods=['GET'])
+def get_image_list():
+    try:
+        # Listar todas as imagens no diretório
+        images = [f for f in os.listdir(IMAGES_DIR) if f.endswith(('.jpg', '.png'))]
+        
+        # Carregar dados falsos
+        image_data = load_image_data()
+
+        # Preparar a resposta com os dados falsos
+        images_info = []
+        for image in images:
+            image_info = image_data.get(image, {})
+            images_info.append({
+                "image": image,
+                "data": image_info
+            })
+
+        return jsonify({"images": images_info})
+    except Exception as e:
+        return jsonify({"error": f"Erro ao listar imagens: {str(e)}"}), 500
+
+# Rota para servir uma imagem específica
+@app.route('/images/<filename>', methods=['GET'])
+def serve_image(filename):
+    try:
+        # Verificar se o arquivo existe
+        image_path = os.path.join(IMAGES_DIR, filename)
+        if os.path.exists(image_path):
+            return send_from_directory(IMAGES_DIR, filename)
+        else:
+            return jsonify({"error": "Imagem não encontrada"}), 404
+    except Exception as e:
+        return jsonify({"error": f"Erro ao servir imagem: {str(e)}"}), 500
+
 if __name__ == '__main__':
     app.run(debug=True)
