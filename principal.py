@@ -6,7 +6,7 @@ import datetime
 import json
 
 # Configuração dos diretórios
-KNOWN_FACES_DIR = 'data/known_faces'
+KNOWN_FACES_DIR = 'known_faces'
 RECOGNITION_LOG_FILE = 'recognition_log.json'
 
 if not os.path.exists(KNOWN_FACES_DIR):
