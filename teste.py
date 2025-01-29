@@ -2,134 +2,148 @@ import os
 import cv2
 import face_recognition
 import numpy as np
-import datetime
-import json
+import requests
+from io import BytesIO
+from PIL import Image
 
 # Configuração dos diretórios
-KNOWN_FACES_DIR = 'data/known_faces'
-RECOGNITION_LOG_FILE = 'recognition_log.json'
+KNOWN_FACES_DIR = 'known_faces'
 
 if not os.path.exists(KNOWN_FACES_DIR):
     os.makedirs(KNOWN_FACES_DIR)
+
+file_links = [
+    "https://drive.google.com/drive/folders/id=1dVV3I6xfwo_sS8fburWvFVweYF71Ynco"
+]
+
+def download_images(links, save_path=KNOWN_FACES_DIR):
+    for i, link in enumerate(links):
+        try:
+            response = requests.get(link, stream=True)
+            if response.status_code == 200:
+                file_name = os.path.join(save_path, f"image_{i+1}.jpg")
+                with open(file_name, 'wb') as f:
+                    f.write(response.content)
+                print(f"Imagem {i+1} salva como: {file_name}")
+            else:
+                print(f"Erro ao baixar a imagem {i+1}. Status code: {response.status_code}")
+        except Exception as e:
+            print(f"Erro ao processar o link {link}: {e}")
 
 # Função para carregar rostos conhecidos
 def load_known_faces():
     known_faces = []
     known_names = []
     for filename in os.listdir(KNOWN_FACES_DIR):
-        if filename.endswith('.jpg'):
+        if filename.endswith(('.jpg', '.png')):  # Suporte a múltiplos formatos
             name = filename.split('_')[0]  # Nome antes do "_X.jpg"
-            name = os.path.splitext(name)[0]  # Remover a extensão .jpg do nome
             img_path = os.path.join(KNOWN_FACES_DIR, filename)
-            # Carregar imagem e calcular as "encodings"
-            image = face_recognition.load_image_file(img_path)
-            encodings = face_recognition.face_encodings(image)
-            if encodings:  # Verifica se encontrou um rosto
-                known_faces.append(encodings[0])
-                known_names.append(name)
+            # Carregar imagem e calcular os "encodings"
+            try:
+                image = face_recognition.load_image_file(img_path)
+                encodings = face_recognition.face_encodings(image)
+                if encodings:  # Verifica se encontrou um rosto
+                    known_faces.append(encodings[0])
+                    known_names.append(name)
+            except Exception as e:
+                print(f"Erro ao carregar a imagem {filename}: {e}")
     return known_faces, known_names
 
-def create_panel(frame, name):
-    person_image_path = os.path.join(KNOWN_FACES_DIR, f"{name}.jpg")
-    if os.path.exists(person_image_path):
-        person_image = cv2.imread(person_image_path)
-        person_image = cv2.resize(person_image, (200, 200))  # Ajuste o tamanho da foto
-        panel_height = max(frame.shape[0], 200)
-        panel_width = frame.shape[1] + 200
-        panel = np.zeros((panel_height, panel_width, 3), dtype=np.uint8)
-        panel[:frame.shape[0], :frame.shape[1]] = frame
-        panel[:200, frame.shape[1]:] = person_image
-        return panel
-    return frame
-
-# Função para carregar o histórico de reconhecimentos
-def load_recognition_log():
-    if os.path.exists(RECOGNITION_LOG_FILE):
-        with open(RECOGNITION_LOG_FILE, 'r') as file:
-            return json.load(file)
-    return {}
-
-# Função para salvar o histórico de reconhecimentos
-def save_recognition_log(recognition_log):
-    with open(RECOGNITION_LOG_FILE, 'w') as file:
-        json.dump(recognition_log, file, indent=4)
+# Função para obter a lista de imagens e dados falsos da API Flask
+def get_images_from_api():
+    try:
+        response = requests.get('http://127.0.0.1:5000/images/lista')  # Endereço da API
+        if response.status_code == 200:
+            return response.json()['images']
+        else:
+            print(f"Erro ao obter lista de imagens. Status code: {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        print(f"Erro na requisição: {e}")
+    return []
 
 # Função para capturar e identificar rostos
-def capture_and_identify_faces():
-    video = cv2.VideoCapture(0)
-    if not video.isOpened():
-        print("Erro: Não foi possível acessar a câmera.")
-        return
-
+def compare_image_with_known_faces(image):
     # Carrega os rostos conhecidos
     known_faces, known_names = load_known_faces()
+    if not known_faces:
+        return [{"error": "Nenhum rosto conhecido foi carregado."}]  # Retorna lista com um dicionário de erro
 
-    # Carrega o histórico de reconhecimentos
-    recognition_log = load_recognition_log()
+    rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-    while True:
-        ret, frame = video.read()
-        if not ret:
-            print("Falha ao capturar o vídeo")
-            break
+    # Localiza rostos no frame
+    face_locations = face_recognition.face_locations(rgb_image)
+    face_encodings = face_recognition.face_encodings(rgb_image, face_locations)
 
-        # Convertendo para RGB (necessário para face_recognition)
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    if not face_encodings:
+        return [{"error": "Nenhum rosto foi detectado na imagem fornecida."}]
 
-        # Localiza rostos no frame
-        face_locations = face_recognition.face_locations(rgb_frame, model='cnn')
-        face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+    # Dicionário de resultados
+    results = []
 
-        for face_encoding, face_location in zip(face_encodings, face_locations):
-            # Comparação com rostos conhecidos
-            face_distances = face_recognition.face_distance(known_faces, face_encoding)
-            best_match_index = np.argmin(face_distances)
+    # Obter a lista de imagens e dados falsos da API
+    images_info = get_images_from_api()
 
-            if face_distances[best_match_index] < 0.5:  # Limite ajustável
-                name = known_names[best_match_index]
-            else:
-                name = "Desconhecido"
+    for face_encoding, face_location in zip(face_encodings, face_locations):
+        # Comparação com rostos conhecidos
+        face_distances = face_recognition.face_distance(known_faces, face_encoding)
+        best_match_index = np.argmin(face_distances)
+        if face_distances[best_match_index] < 0.5:  # Limite ajustável
+            name = known_names[best_match_index]
+            status = "Conhecido"
+        else:
+            name = "Desconhecido"
+            status = "Desconhecido"
 
-            # Desenhar o nome e o bounding box no frame
-            top, right, bottom, left = face_location
-            color = (0, 255, 0) if name != "Desconhecido" else (0, 0, 255)
-            cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
-            cv2.putText(frame, name, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+        # Buscar dados falsos da API para a imagem reconhecida
+        image_info = next((item['data'] for item in images_info if item['image'] == f"{name}.jpg"), {})
 
-            frame = create_panel(frame, name)
+        # Salvar o resultado em um dicionário
+        results.append({
+            "name": name,
+            "status": status,
+            "data": image_info  # Adiciona os dados falsos
+        })
 
-            # Se a pessoa for reconhecida (não for "Desconhecido")
-            if name != "Desconhecido":
-                now = datetime.datetime.now()
-                current_time = now.strftime("%Y-%m-%d %H:%M:%S")
+        # Desenhar o nome e o bounding box na imagem
+        top, right, bottom, left = face_location
+        color = (0, 255, 0) if status == "Conhecido" else (0, 0, 255)
+        cv2.rectangle(rgb_image, (left, top), (right, bottom), color, 2)
+        cv2.putText(rgb_image, name, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
 
-                # Verifica se já foi registrada anteriormente
-                if name in recognition_log:
-                    # Obter o tempo do último reconhecimento registrado
-                    last_time_str = recognition_log[name][-1]
-                    last_time = datetime.datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S")
+    # Mostrar ou salvar a imagem resultante
+    return results
 
-                    # Verificar se já se passaram 60 segundos
-                    time_diff = now - last_time
-                    if time_diff.total_seconds() >= 60:
-                        recognition_log[name].append(current_time)
-                        print(f"{name} reconhecido novamente às {current_time}")
-                else:
-                    # Se for a primeira vez que é reconhecida, registra
-                    recognition_log[name] = [current_time]
-                    print(f"{name} reconhecido pela primeira vez às {current_time}")
-
-        # Exibe o frame
-        cv2.imshow("Reconhecimento Facial", frame)
-        save_recognition_log(recognition_log) # Salva o histórico de reconhecimentos no arquivo JSON
-
-        # Parar o loop ao pressionar 'q'
-        if cv2.waitKey(1) == ord('q'):
-            break  
-    
-    video.release()
-    cv2.destroyAllWindows()
+# Função para carregar a imagem da API
+def get_image_from_api(image_name):
+    try:
+        response = requests.get(f'http://127.0.0.1:5000/images/{image_name}')
+        if response.status_code == 200:
+            image = Image.open(BytesIO(response.content))
+            return np.array(image)
+        else:
+            print(f"Erro ao obter imagem {image_name}. Status code: {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        print(f"Erro na requisição: {e}")
+    return None
 
 # Execução principal
 if __name__ == "__main__":
-    capture_and_identify_faces()
+    images_info = get_images_from_api()  # Obtém a lista de imagens da API
+
+    if images_info:
+        for image_info in images_info:
+            image_name = image_info['image']
+            image = get_image_from_api(image_name)  # Obtém a imagem da API
+            if image is not None:
+                result = compare_image_with_known_faces(image)
+                
+                if isinstance(result, list) and "error" in result[0]:  # Verifica se há erro nos resultados
+                    print(result[0]["error"])
+                else:
+                    print(f"Resultados da análise para a imagem {image_name}:")
+                    for res in result:
+                        print(f"Nome: {res['name']}, Status: {res['status']}, Dados: {res['data']}")
+            else:
+                print(f"Erro ao obter a imagem {image_name}.")
+    else:
+        print("Erro ao obter a lista de imagens da API.")
